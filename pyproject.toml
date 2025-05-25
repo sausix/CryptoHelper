@@ -1,0 +1,9 @@
+[project]
+name = "cryptohelper"
+version = "0.1.1"
+description = "Wrapper module to use the wonderful cryptography package in an easier way."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "cryptography>=45.0.3",
+]

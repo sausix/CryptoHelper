@@ -13,6 +13,8 @@ wheels/
 .venv/
 .env/
 
+.python-version
+
 # Others
 *.swp
 *.kate-swp

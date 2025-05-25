@@ -8,6 +8,7 @@ Version: 0.1
 """
 
 import re
+import struct
 from abc import ABCMeta, abstractmethod
 from functools import partial
 from typing import Union, Optional, List, Tuple, get_args, Type, Generator, Iterable
@@ -17,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from contextlib import suppress
 from inspect import isclass
 from enum import Enum
+from base64 import standard_b64decode
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa, padding, utils, ed25519, ed448
@@ -47,8 +49,8 @@ _EARLIEST_UTC_TIME = datetime(1950, 1, 1, tzinfo=timezone.utc)
 PublicKeyTypes = Union[ec.EllipticCurvePublicKey, rsa.RSAPublicKey, ed25519.Ed25519PublicKey, ed448.Ed448PublicKey]
 PrivateKeyTypes = Union[ec.EllipticCurvePrivateKey, rsa.RSAPrivateKey, ed25519.Ed25519PrivateKey, ed448.Ed448PrivateKey]
 
-_re_pem_entry = re.compile(rb"-----BEGIN (?P<label>[A-Z ]*)-----(?P<base64>.*?)-----END (?P=label)-----", re.DOTALL)
-
+_RE_PEM_ENTRY = re.compile(rb"-----BEGIN (?P<label>[A-Z ]*)-----(?P<base64>.*?)-----END (?P=label)-----", re.DOTALL)
+_RE_SSH_LINE = re.compile(rb"([A-Za-z0-9\-]*) (.*?) (.*)$")
 
 DuplicateCertException = type("DuplicateCertException", (Exception, ), {})
 
@@ -80,7 +82,7 @@ def split_pem_chain(chained_data: bytes) -> Generator[Tuple[slice, Optional[Type
     """
     # "-----BEGIN " + LABEL + "-----" + DATA + "-----END " + LABEL + "-----".
 
-    for match in _re_pem_entry.finditer(chained_data):
+    for match in _RE_PEM_ENTRY.finditer(chained_data):
         label = match.group("label")
         yield slice(match.start(), match.end()), _pem_label_to_class.get(label), label
 
@@ -100,6 +102,11 @@ class _CryptoType(metaclass=ABCMeta):
     @abstractmethod
     def PRIVATE_KEY_TYPE() -> Type[PrivateKeyTypes]:
         """Class of the private key"""
+
+    @classmethod
+    @abstractmethod
+    def from_openssh(cls, decoded_b64: bytes) -> "PublicKey":
+        """Creates a public key of supported types based on OpenSSH key data which is usually stored in base64."""
 
     @abstractmethod
     def create_private_key(self) -> PrivateKeyTypes:
@@ -135,6 +142,53 @@ class _CryptoType(metaclass=ABCMeta):
         """Applies hash algorithms ans parameters into a _CryptoType instance."""
 
 
+def openssh_read_string(data: bytes) -> Tuple[bytes, bytes]:
+    """
+    Reads the next string from a OpenSSH field.
+    :param data: Bytes which should start with the field length.
+    :return: Tuple of the string and the remaining bytes which can be processed further.
+    """
+    length = struct.unpack(">I", data[:4])[0]
+    return data[4:4 + length], data[4 + length:]
+
+
+def openssh_read_mpint(data: bytes) -> Tuple[int, bytes]:
+    """
+    Reads the next OpenSSH field as integer.
+    :param data: Bytes which should start with the field length.
+    :return: Tuple of the integer and the remaining bytes which can be processed further.
+    """
+    length = struct.unpack(">I", data[:4])[0]
+    int_bytes = data[4:4+length]
+    int_value = int.from_bytes(int_bytes, byteorder="big", signed=False)
+    return int_value, data[4 + length:]
+
+
+def openssh_keybytes(data: Union[bytes, str, Path]) -> bytes:
+    """
+    Reads a file or parses the content of a file and returns the raw OpenSSH public key data.
+    The file or a single line has to match for example this format:
+    "ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAQEA7U8... comment"
+    :param data: Bytes of the file, the line or the path to the file containing a single line.
+    :return: Decoded base64 as bytes ready to be parsed individually by _CryptoType subclasses.
+    """
+    if isinstance(data, bytes):
+        content = data
+
+    elif isinstance(data, (str, Path)):
+        keyfile = _check_file(data, must_exist=True, argname="data")
+        content = keyfile.read_bytes()
+
+    else:
+        raise ValueError("Unsupported type of data: " + repr(data))
+
+    m = _RE_SSH_LINE.match(content)
+    if not m:
+        raise ValueError("Could not detect an openssh file structure.")
+
+    return standard_b64decode(m.group(2))
+
+
 class ECCrypto(_CryptoType):
     """Interface class for elliptic curves"""
     HASH_METHOD = hashes.SHA256()
@@ -145,6 +199,35 @@ class ECCrypto(_CryptoType):
 
     PRIVATE_KEY_TYPE = ec.EllipticCurvePrivateKey
     PUBLIC_KEY_TYPE = ec.EllipticCurvePublicKey
+
+    @classmethod
+    def from_openssh(cls, decoded_b64: bytes):
+        ECDSA_CURVES = {
+            b"nistp256": ec.SECP256R1(),
+            b"nistp384": ec.SECP384R1(),
+            b"nistp521": ec.SECP521R1(),
+        }
+
+        key_type, remain = openssh_read_string(decoded_b64)
+        if not key_type.startswith(b"ecdsa-sha2-"):
+            raise ValueError("No ecdsa-sha2-* key data.")
+
+        curve_name, remain = openssh_read_string(remain)
+        pubkey_blob, remain = openssh_read_string(remain)
+
+        curve = ECDSA_CURVES.get(curve_name)
+        if curve is None:
+            raise ValueError(f"Unknown or unsupported curve: {curve_name.decode()}")
+
+        if pubkey_blob[0] != 0x04:
+            raise ValueError("Only uncompressed points are supported.")
+
+        field_len = (curve.key_size + 7) // 8
+        x = int.from_bytes(pubkey_blob[1:1 + field_len], "big")
+        y = int.from_bytes(pubkey_blob[1 + field_len:], "big")
+
+        pub_numbers = ec.EllipticCurvePublicNumbers(x, y, curve)
+        return PublicKey(pub_numbers.public_key())
 
     def __init__(self, hash_method: hashes.HashAlgorithm = None, curve_type: ec.EllipticCurve = None):
         if isinstance(hash_method, hashes.HashAlgorithm):
@@ -194,6 +277,21 @@ class Ed25519Crypto(_CryptoType):
     PUBLIC_KEY_TYPE = ed25519.Ed25519PublicKey
 
     # No settings, no __init__ needed
+
+    @classmethod
+    def from_openssh(cls, decoded_b64: bytes):
+        # begin parsing
+        key_type, remain = openssh_read_string(decoded_b64)
+        if key_type != b"ssh-ed25519":
+            raise ValueError("No Ed25519 key data.")
+
+        pubkey_bytes, _ = openssh_read_string(remain)
+
+        if len(pubkey_bytes) != 32:
+            raise ValueError("Invalid length for an Ed25519 key.")
+
+        pubkey = ed25519.Ed25519PublicKey.from_public_bytes(pubkey_bytes)
+        return PublicKey(pubkey)
 
     def create_private_key(self) -> ed25519.Ed25519PrivateKey:
         return ed25519.Ed25519PrivateKey.generate()
@@ -266,6 +364,19 @@ class RSACrypto(_CryptoType):
 
     PRIVATE_KEY_TYPE = rsa.RSAPrivateKey
     PUBLIC_KEY_TYPE = rsa.RSAPublicKey
+
+    @classmethod
+    def from_openssh(cls, decoded_b64: bytes):
+        # begin parsing
+        key_type, remain = openssh_read_string(decoded_b64)
+        if key_type != b"ssh-rsa":
+            raise ValueError("No RSA key data.")
+
+        e, remain = openssh_read_mpint(remain)
+        n, remain = openssh_read_mpint(remain)
+
+        pubkey = rsa.RSAPublicNumbers(e, n).public_key()
+        return PublicKey(pubkey)
 
     def __init__(self, hash_method: hashes.HashAlgorithm = None, key_size: int = None, exponent: int = None):
         if isinstance(hash_method, hashes.HashAlgorithm):
@@ -398,7 +509,7 @@ def _translate_optional_password(password: Union[str, bytes, bytearray]) -> Opti
         return None
 
     if isinstance(password, str):
-        return password.encode("utf8")
+        return password.encode("utf-8")
 
     if isinstance(password, (bytes, bytearray)):
         return bytes(password)
@@ -949,11 +1060,11 @@ class Cert(PublicKey, ExtensionsBase):
 
     @property
     def not_valid_before(self) -> datetime:
-        return self._cert.not_valid_before
+        return self._cert.not_valid_before_utc
 
     @property
     def not_valid_after(self) -> datetime:
-        return self._cert.not_valid_after
+        return self._cert.not_valid_after_utc
 
     @property
     def issuer(self) -> NameAttributeList:
@@ -973,7 +1084,7 @@ class Cert(PublicKey, ExtensionsBase):
 
     @property
     def is_valid_by_date(self) -> bool:
-        return self._cert.not_valid_before < datetime.now(timezone.utc) < self._cert.not_valid_after
+        return self._cert.not_valid_before_utc < datetime.now(timezone.utc) < self._cert.not_valid_after_utc
 
     def to_bytes(self, encoding=serialization.Encoding.PEM) -> bytes:
         return self._cert.public_bytes(encoding=encoding)
@@ -984,8 +1095,10 @@ class Cert(PublicKey, ExtensionsBase):
 
     def __repr__(self):
         return f"<{self.__class__.__name__}({self.CryptoType!r}) sn='{self._cert.serial_number}' " \
-               f"issuer='{self._issuer!s}' subject='{self._subject!s}', " \
-               f"not_valid_before='{self._cert.not_valid_before}', not_valid_after='{self._cert.not_valid_after}' " \
+               f"issuer='{self._issuer!s}', " \
+               f"subject='{self._subject!s}', " \
+               f"not_valid_before='{self._cert.not_valid_before_utc}', " \
+               f"not_valid_after='{self._cert.not_valid_after_utc}' " \
                f"{self.public_key_digest.hex(':')}>"
 
 
@@ -1493,4 +1606,5 @@ _pem_label_to_class = {
     b"PRIVATE KEY": PrivateKey,
     b"ENCRYPTED PRIVATE KEY": PrivateKey,
     b"PUBLIC KEY": PublicKey,
+    # TODO: BEGIN OPENSSH PRIVATE KEY
 }
