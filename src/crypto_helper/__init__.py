@@ -4,7 +4,7 @@
 CryptoHelper
 Adrian Sausenthaler
 
-Version: 0.1
+Version: 0.2
 """
 
 import re
@@ -49,8 +49,19 @@ _EARLIEST_UTC_TIME = datetime(1950, 1, 1, tzinfo=timezone.utc)
 PublicKeyTypes = Union[ec.EllipticCurvePublicKey, rsa.RSAPublicKey, ed25519.Ed25519PublicKey, ed448.Ed448PublicKey]
 PrivateKeyTypes = Union[ec.EllipticCurvePrivateKey, rsa.RSAPrivateKey, ed25519.Ed25519PrivateKey, ed448.Ed448PrivateKey]
 
-_RE_PEM_ENTRY = re.compile(rb"-----BEGIN (?P<label>[A-Z ]*)-----(?P<base64>.*?)-----END (?P=label)-----", re.DOTALL)
-_RE_SSH_LINE = re.compile(rb"([A-Za-z0-9\-]*) (.*?) (.*)$")
+# Groups: 1: label, 2: base64 data
+_RE_PEM_BODY = re.compile(rb"-----BEGIN (?P<label>[A-Z ]*)-----(?P<base64>.*?)-----END (?P=label)-----",
+                          re.DOTALL)
+
+# Groups: 1: key, 2: value
+_RE_PGP_HEADER = re.compile(rb"^(?P<key>\S+): (?P<value>.+)$")
+
+# Groups: 1: headers, 2: base64 data 3: CRC-24
+_RE_PGP = re.compile(rb"-----BEGIN PGP PUBLIC KEY BLOCK-----\n(.*)\n\n(.*)\n=(.*)\n-----END PGP PUBLIC KEY BLOCK-----",
+                     re.DOTALL)
+
+# Groups: 1: key type, 2: hash data, 3: comment
+_RE_SSH_LINE = re.compile(rb"([A-Za-z0-9\-]+) (.*?) (.*)$")
 
 DuplicateCertException = type("DuplicateCertException", (Exception, ), {})
 
@@ -82,7 +93,7 @@ def split_pem_chain(chained_data: bytes) -> Generator[Tuple[slice, Optional[Type
     """
     # "-----BEGIN " + LABEL + "-----" + DATA + "-----END " + LABEL + "-----".
 
-    for match in _RE_PEM_ENTRY.finditer(chained_data):
+    for match in _RE_PEM_BODY.finditer(chained_data):
         label = match.group("label")
         yield slice(match.start(), match.end()), _pem_label_to_class.get(label), label
 
@@ -93,11 +104,13 @@ class _CryptoType(metaclass=ABCMeta):
     """
     HASH_METHOD = None
 
+    # noinspection PyPep8Naming
     @staticmethod
     @abstractmethod
     def PUBLIC_KEY_TYPE() -> Type[PublicKeyTypes]:
         """Class of the public key"""
 
+    # noinspection PyPep8Naming
     @staticmethod
     @abstractmethod
     def PRIVATE_KEY_TYPE() -> Type[PrivateKeyTypes]:
@@ -182,11 +195,37 @@ def openssh_keybytes(data: Union[bytes, str, Path]) -> bytes:
     else:
         raise ValueError("Unsupported type of data: " + repr(data))
 
-    m = _RE_SSH_LINE.match(content)
-    if not m:
+    if not (m := _RE_SSH_LINE.match(content)):
         raise ValueError("Could not detect an openssh file structure.")
 
     return standard_b64decode(m.group(2))
+
+
+def openpgp_keybytes(data: Union[bytes, str, Path]) -> bytes:
+    """
+    Reads a file or parses the content of a file and returns the raw OpenPGP public key data.
+    The file extension is usually ".asc" and the data has to start with this line:
+    "-----BEGIN PGP PUBLIC KEY BLOCK-----"
+    :param data: Bytes of the file or the path to the file containing the PGP public key.
+    :return: Decoded base64 as bytes ready to be parsed individually by _CryptoType subclasses.
+    """
+    if isinstance(data, bytes):
+        content = data
+
+    elif isinstance(data, (str, Path)):
+        keyfile = _check_file(data, must_exist=True, argname="data")
+        content = keyfile.read_bytes()
+
+    else:
+        raise ValueError("Unsupported type of data: " + repr(data))
+
+    if not (m := _RE_PGP.match(content)):
+        raise ValueError("Could not detect an OpenPGP file structure.")
+
+    # header = m.group(1)
+    body = m.group(2)
+    # crc24 = m.group(3)
+    return standard_b64decode(body)
 
 
 class ECCrypto(_CryptoType):
@@ -200,14 +239,14 @@ class ECCrypto(_CryptoType):
     PRIVATE_KEY_TYPE = ec.EllipticCurvePrivateKey
     PUBLIC_KEY_TYPE = ec.EllipticCurvePublicKey
 
+    ECDSA_CURVE_FROM_STR = {
+        b"nistp256": ec.SECP256R1(),
+        b"nistp384": ec.SECP384R1(),
+        b"nistp521": ec.SECP521R1(),
+    }
+
     @classmethod
     def from_openssh(cls, decoded_b64: bytes):
-        ECDSA_CURVES = {
-            b"nistp256": ec.SECP256R1(),
-            b"nistp384": ec.SECP384R1(),
-            b"nistp521": ec.SECP521R1(),
-        }
-
         key_type, remain = openssh_read_string(decoded_b64)
         if not key_type.startswith(b"ecdsa-sha2-"):
             raise ValueError("No ecdsa-sha2-* key data.")
@@ -215,7 +254,7 @@ class ECCrypto(_CryptoType):
         curve_name, remain = openssh_read_string(remain)
         pubkey_blob, remain = openssh_read_string(remain)
 
-        curve = ECDSA_CURVES.get(curve_name)
+        curve = cls.ECDSA_CURVE_FROM_STR.get(curve_name)
         if curve is None:
             raise ValueError(f"Unknown or unsupported curve: {curve_name.decode()}")
 
@@ -321,6 +360,11 @@ class Ed25519Crypto(_CryptoType):
 
 class Ed448Crypto(_CryptoType):
     """Interface class for Ed448"""
+
+    @classmethod
+    def from_openssh(cls, decoded_b64: bytes) -> "PublicKey":
+        raise NotImplementedError("Ed448 is not supported by OpenSSH.")
+
     HASH_METHOD = None  # SHAKE265 but only used in backend internally.
 
     PRIVATE_KEY_TYPE = ed448.Ed448PrivateKey
@@ -377,6 +421,10 @@ class RSACrypto(_CryptoType):
 
         pubkey = rsa.RSAPublicNumbers(e, n).public_key()
         return PublicKey(pubkey)
+
+    @classmethod
+    def from_openpgp(cls, decoded_b64):
+        pass
 
     def __init__(self, hash_method: hashes.HashAlgorithm = None, key_size: int = None, exponent: int = None):
         if isinstance(hash_method, hashes.HashAlgorithm):
@@ -499,6 +547,7 @@ def _load_public_key(pubkey: bytes):
         return serialization.load_pem_public_key(pubkey)
 
     return serialization.load_der_public_key(pubkey)
+    # TODO: Check OpenSSH and openPGP bytes here
 
 
 def _translate_optional_password(password: Union[str, bytes, bytearray]) -> Optional[bytes]:
@@ -559,6 +608,7 @@ class PublicKey:
             bytes: Load from bytes representation
             PublicKeyTypes: Load public key from Cryptography's public key instances
         """
+        # TODO: Remember source
 
         if isinstance(pubkey, get_args(PublicKeyTypes)):
             # It's a public key already
@@ -687,7 +737,8 @@ class PublicKey:
         Verify the data and signature by the PublicKey.
         Especially huge data should be passed prehashed.
         :param sig: Signature of the data created with this Public key. Can be a str or Path to a file on disk.
-        :param data_or_hash: Data or prehashed checksum which integrity will be checked. On prehashed set already_hashed to True
+        :param data_or_hash: Data or prehashed checksum which integrity will be checked.
+                             On prehashed set already_hashed to True
         :param already_hashed: Set to True if passing prehashed data
         :raises: Raises InvalidSignature if the signature does not match the data or PublicKey.
         """
@@ -747,6 +798,7 @@ class PrivateKey(PublicKey):
             None: Create a new PrivateKey based on the default of this class's CryptoType
         :param passwd: The optional password which protects the PrivateKey
         """
+        # TODO: Remember source
 
         # Local storage password
         self._password = _translate_optional_password(passwd)
@@ -775,18 +827,21 @@ class PrivateKey(PublicKey):
 
         elif isclass(privkey) and issubclass(privkey, _CryptoType):
             # Create private key based on user defined config
-            self._private_key = privkey.create_private_key(privkey)
+            self._private_key = privkey.create_private_key(privkey)  # TODO: Check fix types
 
         elif privkey is None and isclass(self.CryptoType):
             # Create a new private key of default type now
             # Call a class method
-            self._private_key = self.CryptoType.create_private_key(self.CryptoType)
+            self._private_key = self.CryptoType.create_private_key(self.CryptoType)  # TODO: Check fix types
 
         else:
             raise TypeError("Unsupported format for private key given: " + str(type(privkey)))
 
         # Init corresponding public key
-        PublicKey.__init__(self, self._private_key.public_key())
+        PublicKey.__init__(self, self._private_key.public_key())  # TODO: Check fix types
+
+    def change_passwd(self, passwd: Union[str, bytes, bytearray] = None):
+        self._password = _translate_optional_password(passwd)
 
     def private_key_to_bytes(self, encoding=serialization.Encoding.PEM, fmt=serialization.PrivateFormat.PKCS8) -> bytes:
         """
@@ -1494,6 +1549,7 @@ class ExtensionBuilder:
 
         self._exts.append(ext)
 
+    # noinspection PyPep8Naming
     def BasicConstraints(self,
                          critical=False,
                          ca=True,
@@ -1507,6 +1563,7 @@ class ExtensionBuilder:
                               )
                     )
 
+    # noinspection PyPep8Naming
     def SubjectKeyIdentifier(self,
                              critical: bool,
                              digest: bytes):
@@ -1515,6 +1572,7 @@ class ExtensionBuilder:
                               SubjectKeyIdentifier(digest))
                     )
 
+    # noinspection PyPep8Naming
     def AuthorityKeyIdentifier(self,
                                critical: bool,
                                digest: bytes,
@@ -1532,12 +1590,14 @@ class ExtensionBuilder:
                               AuthorityKeyIdentifier(digest, issuers, sn))
                     )
 
+    # noinspection PyPep8Naming
     def ExtendedKeyUsage(self, critical: bool, usages: Iterable[ObjectIdentifier]):
         self.append(Extension(ExtendedKeyUsage.oid,
                               critical,
                               ExtendedKeyUsage(usages))
                     )
 
+    # noinspection PyPep8Naming
     def KeyUsage(self,
                  critical: bool,
                  digital_signature=False,
@@ -1564,6 +1624,7 @@ class ExtensionBuilder:
                               )
                     )
 
+    # noinspection PyPep8Naming
     def SubjectAltName(self,
                        critical: bool,
                        subject_alt_name: Union[Iterable[GeneralName], GeneralName]):
@@ -1578,6 +1639,7 @@ class ExtensionBuilder:
                               )
                     )
 
+    # noinspection PyPep8Naming
     def CRLReason(self,
                   critical: bool,
                   reason: CRLReasonFlags):
@@ -1588,6 +1650,7 @@ class ExtensionBuilder:
                               )
                     )
 
+    # noinspection PyPep8Naming
     def CRLDistributionPoints(self,
                               critical: bool,
                               endpoints: Iterable[DistributionPoint]):

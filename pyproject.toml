@@ -1,9 +1,30 @@
 [project]
-name = "cryptohelper"
-version = "0.1.1"
+name = "crypto_helper"
+version = "0.1.2"
 description = "Wrapper module to use the wonderful cryptography package in an easier way."
+keywords = ["ec", "rsa", "ecdsa", "pki", "ed25519", "x509", "x.509", "cert", "crl", "csr",
+    "signing", "encryption", "decryption", "encrypt", "decrypt"]
 readme = "README.md"
+authors = [
+    { name = "sausix" }
+]
 requires-python = ">=3.9"
 dependencies = [
-    "cryptography>=45.0.3",
+    "cryptography==45.0.3",
 ]
+classifiers = ["Private :: Do Not Upload"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.black]
+line-length = 120
+skip-string-normalization = true
+
+[tool.flake8]
+max-line-length = 120
+
+[tool.ruff]
+line-length = 120
+

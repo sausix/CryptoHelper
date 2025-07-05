@@ -12,7 +12,7 @@ from cryptography.x509 import NameOID, DirectoryName, random_serial_number, DNSN
 from cryptography.x509.oid import ExtendedKeyUsageOID
 from cryptography.hazmat.primitives import serialization
 
-from CryptoHelper import CommonName, CertBuilder, ExtensionBuilder, Cert, CertSigningRequest, CsrBuilder, ECCrypto, \
+from crypto_helper import CommonName, CertBuilder, ExtensionBuilder, Cert, CertSigningRequest, CsrBuilder, ECCrypto, \
     CrlBuilder, Crl, convert_timeinfo, RevokedCert, CRLReasonFlags
 
 # TODO: file permissions

@@ -2,7 +2,9 @@
 # -*- coding: utf-8 -*-
 
 from pathlib import Path
-from pki import CA, CommonName, SignType
+
+from crypto_helper.pki import CA, CommonName, SignType
+
 
 ROOT_PATH = Path()
 CA_PATH = ROOT_PATH / "ca"

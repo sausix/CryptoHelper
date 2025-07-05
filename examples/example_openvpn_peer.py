@@ -3,7 +3,7 @@
 
 from pathlib import Path
 
-from pki import Peer, CommonName
+from crypto_helper.pki import Peer, CommonName
 
 
 PEER_PATH = Path("peer")

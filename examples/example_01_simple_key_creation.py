@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 
 from pathlib import Path
-from CryptoHelper import PrivateKey, PublicKey, Ed25519Crypto
+
+from crypto_helper import PrivateKey, PublicKey, Ed25519Crypto
 
 
 workdir = Path("/tmp")

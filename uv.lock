@@ -72,6 +72,17 @@ wheels = [
 ]
 
 [[package]]
+name = "crypto-helper"
+version = "0.1.2"
+source = { editable = "." }
+dependencies = [
+    { name = "cryptography" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "cryptography", specifier = "==45.0.3" }]
+
+[[package]]
 name = "cryptography"
 version = "45.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -117,17 +128,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/db/d4/22628c2dedd99289960a682439c6d3aa248dff5215123ead94ac2d82f3f5/cryptography-45.0.3-pp311-pypy311_pp73-manylinux_2_34_x86_64.whl", hash = "sha256:dc10ec1e9f21f33420cc05214989544727e776286c1c16697178978327b95c9c", size = 4387389, upload-time = "2025-05-25T14:17:17.303Z" },
     { url = "https://files.pythonhosted.org/packages/39/ec/ba3961abbf8ecb79a3586a4ff0ee08c9d7a9938b4312fb2ae9b63f48a8ba/cryptography-45.0.3-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:9eda14f049d7f09c2e8fb411dda17dd6b16a3c76a1de5e249188a32aeb92de19", size = 3337432, upload-time = "2025-05-25T14:17:19.507Z" },
 ]
-
-[[package]]
-name = "cryptohelper"
-version = "0.1.1"
-source = { virtual = "." }
-dependencies = [
-    { name = "cryptography" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "cryptography", specifier = ">=45.0.3" }]
 
 [[package]]
 name = "pycparser"

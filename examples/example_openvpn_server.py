@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 from pathlib import Path
-from pki import Peer, CommonName
+from crypto_helper.pki import Peer, CommonName
 
 
 SERVER_PATH = Path("server")
