@@ -1,6 +1,6 @@
 [project]
 name = "crypto_helper"
-version = "0.1.2"
+version = "0.3.0"
 description = "Wrapper module to use the wonderful cryptography package in an easier way."
 keywords = ["ec", "rsa", "ecdsa", "pki", "ed25519", "x509", "x.509", "cert", "crl", "csr",
     "signing", "encryption", "decryption", "encrypt", "decrypt"]
@@ -10,7 +10,7 @@ authors = [
 ]
 requires-python = ">=3.9"
 dependencies = [
-    "cryptography==45.0.3",
+    "cryptography==45.0.5",
 ]
 classifiers = ["Private :: Do Not Upload"]
 
@@ -28,3 +28,11 @@ max-line-length = 120
 [tool.ruff]
 line-length = 120
 
+[tool.pylint.messages_control]
+max-line-length = 120
+disable = [
+  "too-few-public-methods",
+  "too-many-arguments",
+  "too-many-positional-arguments",
+  "too-many-local-variables",
+]

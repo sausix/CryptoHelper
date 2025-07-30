@@ -3,7 +3,7 @@
 
 from pathlib import Path
 
-from crypto_helper import PrivateKey, PublicKey, Ed25519Crypto
+from crypto_helper import PrivateKey, PublicKey, ECCrypto
 
 
 workdir = Path("/tmp")
@@ -13,8 +13,7 @@ private_key_file = workdir / "private.key"
 public_key_file = workdir / "public.pub"
 
 # Create a private key.
-priv = PrivateKey()
-# priv = PrivateKey(Ed25519Crypto)
+priv = PrivateKey(ECCrypto)
 print(priv)  # Little information
 
 
@@ -28,6 +27,9 @@ print("Public key saved to:", public_key_file)
 
 # You have created and saved a private and public key pair!
 
+# Now let's load them from files in new objects.
+privkey = PrivateKey(private_key_file)
+print(privkey)
 
 # Another party may read the public key and do some crypto stuff.
 pubkey = PublicKey(public_key_file)

@@ -3,7 +3,7 @@
 
 from pathlib import Path
 
-from crypto_helper import PrivateKey, PublicKey
+from crypto_helper import PrivateKey, PublicKey, RSACrypto
 
 
 workdir = Path("/tmp")
@@ -16,7 +16,7 @@ sig_file = workdir / "file_to_sign.txt.sig"
 
 
 # Create a private key for signing data
-priv = PrivateKey()
+priv = PrivateKey(RSACrypto(key_size=2048))
 print(priv)  # Little information
 
 # Never give a private key away. Save it in a secure folder in PEM format.
